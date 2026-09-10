@@ -158,6 +158,35 @@ SCROLL_SIDEBAR_TO_TOP_EXPR = r"""
 })()
 """
 
+# Tiklamadan sonra uygulama, az onceki aktif/tiklanan sohbeti gorunur tutmak
+# icin sidebar'i KENDI KAFASINA GORE bir yere kaydirabiliyor -- bu bizim
+# ilerleme takibimizi (nerede kaldik) bozuyordu. Her tarama oncesi kendi
+# takip ettigimiz "cursor" pozisyonunu YENIDEN DAYATIYORUZ, uygulamanin
+# scroll'una guvenmiyoruz.
+SET_SIDEBAR_SCROLL_TMPL = r"""
+(function(){
+  const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;
+  function countRowDescendants(container) {
+    let count = 0;
+    const cand = container.querySelectorAll('div,li,a,button');
+    for (const el of cand) {
+      const t = (el.innerText || '').trim();
+      const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
+      if (lines.length === 2 && timePattern.test(lines[1])) {
+        count++;
+        if (count >= 3) return true;
+      }
+    }
+    return false;
+  }
+  const candidates = Array.from(document.querySelectorAll('*'))
+    .filter(e => e.scrollHeight > e.clientHeight + 50);
+  const sidebarLike = candidates.filter(countRowDescendants);
+  for (const e of sidebarLike) { e.scrollTop = __SCROLL_TARGET__; }
+  return JSON.stringify({containers: sidebarLike.length});
+})()
+"""
+
 
 def list_targets():
     with urllib.request.urlopen(f"http://localhost:{PORT}/json/list", timeout=5) as r:
@@ -232,6 +261,13 @@ async def run(live, max_clicks):
 
         stale_rounds = 0
         last_scroll_top = -1
+        # Kendi ilerleme takibimiz. Uygulama, her tiklamadan SONRA az onceki
+        # aktif sohbeti gorunur tutmak icin sidebar'i KENDI KAFASINA GORE
+        # bir yere kaydirabiliyor -- bu bizim "nerede kaldik" bilgimizi
+        # bozuyor (gozlem: "cok atladi, direkt secili sohbete gitti"). Bu
+        # yuzden her tarama ONCESINDE kendi cursor'umuzu YENIDEN DAYATIYORUZ,
+        # uygulamanin son biraktigi pozisyona guvenmiyoruz.
+        sidebar_cursor = 0
         # "yeni satir yok" TEK BASINA pes etme sebebi degil -- ayni (baslik,zaman)
         # cifti farkli projelerde tekrar edebiliyor (ornek: "GitLab Merge Request
         # Review" birden fazla projede), bu da scroll GERCEKTEN ilerlerken bile
@@ -243,6 +279,10 @@ async def run(live, max_clicks):
 
         while total < max_clicks and stale_rounds < STALE_LIMIT:
             try:
+                # Kendi cursor'umuzu yeniden dayat -- tiklama sonrasi
+                # uygulamanin sidebar'i baska bir yere kaydirmis olma
+                # ihtimaline karsi.
+                await cdp.eval(SET_SIDEBAR_SCROLL_TMPL.replace("__SCROLL_TARGET__", str(sidebar_cursor)))
                 captured_titles = load_captured_titles()
                 rows_raw = await cdp.eval(FIND_ROWS_EXPR)
                 rows = json.loads(rows_raw) if rows_raw else []
@@ -271,6 +311,7 @@ async def run(live, max_clicks):
                     # olabilir. Sayaci sifirla, pes etme.
                     stale_rounds = 0
                     last_scroll_top = cur_top
+                    sidebar_cursor = cur_top
                 else:
                     stale_rounds += 1
                 remaining = (max_top - cur_top) if (cur_top is not None and max_top is not None) else "?"
