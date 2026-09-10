@@ -92,7 +92,14 @@ SCROLL_AND_CAPTURE_EXPR = """
   await sleep(1500);
   for (const e of findScrollables()) { e.scrollTop = 0; }
   await sleep(500);
-  return document.body.innerText;
+  const capturedText = document.body.innerText;
+  // Metni ONCE al, SONRA (kullanicinin ekranda gordugu sohbeti en eski
+  // mesajlarda birakmamak icin) panel(ler)i tekrar en alta dondur. Sirayi
+  // TERSINE cevirme -- innerText'ten SONRA scroll edersek, olasi bir
+  // virtualization (uzak mesajlarin DOM'dan cikmasi) yeni okunan metni
+  // eksiltebilir; onceden yakalanan metin guvende kalir.
+  for (const e of findScrollables()) { e.scrollTop = e.scrollHeight; }
+  return capturedText;
 })()
 """
 
