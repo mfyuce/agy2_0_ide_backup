@@ -116,8 +116,12 @@ EXPAND_AND_SCROLL_EXPR = r"""
   const candidates = Array.from(document.querySelectorAll('*'))
     .filter(e => e.scrollHeight > e.clientHeight + 50);
   const sidebarLike = candidates.filter(countRowDescendants);
-  for (const e of sidebarLike) { e.scrollTop += 400; }
-  return JSON.stringify({seeAllClicked: clicked, sidebarContainers: sidebarLike.length, totalScrollables: candidates.length});
+  for (const e of sidebarLike) { e.scrollTop += 600; }
+  const maxScrollTop = Math.max(0, ...sidebarLike.map(e => e.scrollTop));
+  const maxPossible = Math.max(0, ...sidebarLike.map(e => e.scrollHeight - e.clientHeight));
+  return JSON.stringify({seeAllClicked: clicked, sidebarContainers: sidebarLike.length,
+                          totalScrollables: candidates.length, scrollTop: maxScrollTop,
+                          maxPossible: maxPossible});
 })()
 """
 
@@ -227,8 +231,17 @@ async def run(live, max_clicks):
         print(f"[{time.strftime('%H:%M:%S')}] sidebar en tepeye sifirlandi (tekrarli): {reset}")
 
         stale_rounds = 0
+        last_scroll_top = -1
+        # "yeni satir yok" TEK BASINA pes etme sebebi degil -- ayni (baslik,zaman)
+        # cifti farkli projelerde tekrar edebiliyor (ornek: "GitLab Merge Request
+        # Review" birden fazla projede), bu da scroll GERCEKTEN ilerlerken bile
+        # bir sure "hepsi zaten yakalanmis" gibi gorunmesine yol acabiliyor.
+        # Bu yuzden scrollTop'un KENDISI de ilerliyor mu diye ayrica takip
+        # ediyoruz: pozisyon hala degisiyorsa sayaci SIFIRLA, gercekten dibe
+        # vurunca (pozisyon da sabitlenince) pes et.
+        STALE_LIMIT = 40
 
-        while total < max_clicks and stale_rounds < 12:
+        while total < max_clicks and stale_rounds < STALE_LIMIT:
             try:
                 captured_titles = load_captured_titles()
                 rows_raw = await cdp.eval(FIND_ROWS_EXPR)
@@ -245,10 +258,23 @@ async def run(live, max_clicks):
             if not todo:
                 try:
                     exp = await cdp.eval(EXPAND_AND_SCROLL_EXPR)
-                    print(f"[{time.strftime('%H:%M:%S')}] yeni satir yok, genislet/scroll (deneme {stale_rounds+1}/12): {exp}")
+                    exp_data = json.loads(exp) if exp else {}
                 except Exception as e:
                     print(f"[{time.strftime('%H:%M:%S')}] HATA (genislet/scroll): {type(e).__name__}: {e}")
-                stale_rounds += 1
+                    exp_data = {}
+
+                cur_top = exp_data.get("scrollTop")
+                max_top = exp_data.get("maxPossible")
+                if cur_top is not None and cur_top != last_scroll_top:
+                    # pozisyon hala ilerliyor -- "yeni satir yok" gorunse de
+                    # bu GERCEK bir dip degil, sadece baslik-eslesmesi kacirmis
+                    # olabilir. Sayaci sifirla, pes etme.
+                    stale_rounds = 0
+                    last_scroll_top = cur_top
+                else:
+                    stale_rounds += 1
+                remaining = (max_top - cur_top) if (cur_top is not None and max_top is not None) else "?"
+                print(f"[{time.strftime('%H:%M:%S')}] yeni satir yok, genislet/scroll (stale {stale_rounds}/{STALE_LIMIT}, scrollTop={cur_top}, kalan~{remaining}px): {exp_data}")
                 await asyncio.sleep(2.2)
                 continue
 
