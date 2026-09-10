@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
+*.log
+.env
+.env.*
+# Kişisel/proje planlama dosyaları — bu public repo'da DEĞİL, ayrı private
+# repoda (agy2_0_ide_backup-prv) versiyonlanıyor. Sadece biri yanlışlıkla
+# `git add -A` yapıp tekrar public'e sızdırmasın diye burada da işaretli.
+/CLAUDE.md
+/AGENTS.md
+/TODO.md
+/TOBEDECIDED.md
+/DONE.md
