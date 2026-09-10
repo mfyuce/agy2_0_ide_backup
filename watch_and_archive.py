@@ -9,15 +9,19 @@ en uste scroll eder (lazy-load'i tetiklemek icin), sonra tam sayfa metnini
 kaydeder. Tiklama/navigasyon YAPMAZ -- sadece: (a) sayfa metni okuma,
 (b) scrollTop mutasyonu. Tiklama tarafi icin bkz. click_through_all.py.
 
-Her calistirma AYRI, zaman-damgali bir klasore yazar (backup gibi --
-onceki run'lardaki kayitlari GORMEZ, ayni sohbet tekrar acilirsa tekrar
-yakalar). Cikti: ~/antigravity_chat_archive/run_<YYYYMMDD_HHMMSS>/
-<baslik>__<conv_id8>.txt (repo DISINDA, kapsam kullanicinin tum
-portfoyunu icerdigi icin). Aktif run'in yolu, click_through_all.py'nin
-bulabilmesi icin ~/antigravity_chat_archive/_current_run.txt dosyasina
-yazilir. Durum (sadece bu run icin, ayni sohbeti bu run icinde iki kere
-yakalamamak icin): <run_klasoru>/_seen.json.
+Varsayilan olarak her calistirma AYRI, zaman-damgali bir klasore yazar
+(backup gibi -- onceki run'lardaki kayitlari GORMEZ, ayni sohbet tekrar
+acilirsa tekrar yakalar). `--resume` verilirse yeni klasor ACMAZ, en son
+run klasorune devam eder (zaten kaydedilmisleri atlar) -- kod duzeltmesi
+sonrasi yeniden baslatirken bastan baslamamak icin. Cikti:
+~/antigravity_chat_archive/run_<YYYYMMDD_HHMMSS>/<baslik>__<conv_id8>.txt
+(repo DISINDA, kapsam kullanicinin tum portfoyunu icerdigi icin). Aktif
+run'in yolu, click_through_all.py'nin bulabilmesi icin
+~/antigravity_chat_archive/_current_run.txt dosyasina yazilir. Durum
+(sadece bu run icin, ayni sohbeti bu run icinde iki kere yakalamamak
+icin): <run_klasoru>/_seen.json.
 """
+import argparse
 import asyncio
 import json
 import re
@@ -29,10 +33,19 @@ import websockets
 
 PORT = 9223
 ARCHIVE_ROOT = Path.home() / "antigravity_chat_archive"
-RUN_DIR = ARCHIVE_ROOT / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
 CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
-SEEN_FILE = RUN_DIR / "_seen.json"
 POLL_INTERVAL = 1.5
+
+# main()'de --resume'a gore belirlenir (yeni run mi, en son run'a devam mi).
+RUN_DIR = None
+SEEN_FILE = None
+
+
+def find_latest_run_dir():
+    if not ARCHIVE_ROOT.exists():
+        return None
+    runs = sorted(p for p in ARCHIVE_ROOT.iterdir() if p.is_dir() and p.name.startswith("run_"))
+    return runs[-1] if runs else None
 
 SCROLL_AND_CAPTURE_EXPR = """
 (async () => {
@@ -141,13 +154,26 @@ def save_seen(seen):
     SEEN_FILE.write_text(json.dumps(seen, indent=2, ensure_ascii=False))
 
 
-async def main():
+async def main(resume):
+    global RUN_DIR, SEEN_FILE
     ARCHIVE_ROOT.mkdir(exist_ok=True)
+
+    if resume:
+        RUN_DIR = find_latest_run_dir()
+        if RUN_DIR is None:
+            print(f"[{time.strftime('%H:%M:%S')}] --resume verildi ama hic run klasoru yok, yeni acilyor", flush=True)
+            resume = False
+    if not resume:
+        RUN_DIR = ARCHIVE_ROOT / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+
     RUN_DIR.mkdir(exist_ok=True)
+    SEEN_FILE = RUN_DIR / "_seen.json"
     CURRENT_RUN_POINTER.write_text(str(RUN_DIR))
     seen = load_seen()
-    print(f"[{time.strftime('%H:%M:%S')}] YENI RUN: port {PORT} -> {RUN_DIR}", flush=True)
-    print(f"[{time.strftime('%H:%M:%S')}] bu run icin {len(seen)} konusma kaydedilmis (onceki run'lar ayri, gorulmuyor)", flush=True)
+    tag = "DEVAM (resume)" if resume else "YENI RUN"
+    print(f"[{time.strftime('%H:%M:%S')}] {tag}: port {PORT} -> {RUN_DIR}", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] bu run icin {len(seen)} konusma kaydedilmis"
+          + ("" if resume else " (onceki run'lar ayri, gorulmuyor)"), flush=True)
 
     while True:
         try:
@@ -203,7 +229,11 @@ async def main():
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--resume", action="store_true",
+                     help="yeni run acma, en son run klasorune devam et (zaten kaydedilmisleri atlar)")
+    args = ap.parse_args()
     try:
-        asyncio.run(main())
+        asyncio.run(main(args.resume))
     except KeyboardInterrupt:
         pass

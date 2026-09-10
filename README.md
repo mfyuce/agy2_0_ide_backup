@@ -59,9 +59,13 @@ Output lands in `~/antigravity_chat_archive/run_<YYYYMMDD_HHMMSS>/`, one `.txt` 
 conversation, plus a `_seen.json` index. **Every run gets its own folder** — re-running
 `click_through_all.py --live` against a fresh `watch_and_archive.py` run re-clicks and
 re-captures everything again (a full new backup pass), it does not try to diff against
-previous runs. The archive folder lives outside this repo and is never committed anywhere;
-treat it as sensitive — it contains the full text of whatever conversations you had open,
-across whatever projects you were using the IDE for.
+previous runs. Use `python3 watch_and_archive.py --resume` instead when you're restarting
+after an interruption (a crash, a code fix) and want to pick up where the *same* pass left
+off rather than starting a whole new one — it continues writing into the most recent
+`run_*/` folder and skips whatever it already captured there. The archive folder lives
+outside this repo and is never committed anywhere; treat it as sensitive — it contains the
+full text of whatever conversations you had open, across whatever projects you were using
+the IDE for.
 
 ## How the two pieces coordinate
 

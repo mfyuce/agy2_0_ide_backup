@@ -60,9 +60,12 @@ python3 click_through_all.py --live
 `.txt` dosyası + bir `_seen.json` indeksi. **Her çalıştırma kendi klasörünü alır** — taze bir
 `watch_and_archive.py` çalıştırmasına karşı `click_through_all.py --live`'ı tekrar çalıştırmak
 her şeyi yeniden tıklayıp yeniden yakalar (tam yeni bir yedekleme turu), önceki run'larla
-diff almaya çalışmaz. Arşiv klasörü bu repo'nun dışında yaşar ve hiçbir yere commit edilmez;
-hassas veri gibi ele alın — IDE'yi hangi projeler için kullandıysanız, o projelerin açık
-olan konuşmalarının tam metnini içerir.
+diff almaya çalışmaz. Bir kesinti sonrası (çökme, kod düzeltmesi) AYNI turdan devam etmek
+istiyorsan (yeni bir tur başlatmak yerine) `python3 watch_and_archive.py --resume` kullan —
+en son `run_*/` klasörüne yazmaya devam eder, orada zaten yakalanmış olanları atlar. Arşiv
+klasörü bu repo'nun dışında yaşar ve hiçbir yere commit edilmez; hassas veri gibi ele alın —
+IDE'yi hangi projeler için kullandıysanız, o projelerin açık olan konuşmalarının tam metnini
+içerir.
 
 ## İki parça nasıl koordine oluyor
 
