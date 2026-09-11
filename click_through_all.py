@@ -28,17 +28,6 @@ import websockets
 
 PORT = 9223
 ARCHIVE_ROOT = Path.home() / "antigravity_chat_archive"
-CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
-
-
-def current_seen_file():
-    # watch_and_archive.py her calistirmada ayri bir run klasoru acar ve
-    # yolunu buraya yazar -- boylece biz de HANGI run'in _seen.json'ina
-    # bakacagimizi biliriz (onceki run'lari GORMEYIZ, hepsi yeniden cekilir).
-    if CURRENT_RUN_POINTER.exists():
-        run_dir = Path(CURRENT_RUN_POINTER.read_text().strip())
-        return run_dir / "_seen.json"
-    return None
 
 ROW_PATTERN_JS = r"const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;"
 
@@ -194,17 +183,27 @@ def list_targets():
 
 
 def load_captured_titles():
-    # SADECE aktif (su anki) run'in _seen.json'ina bakar -- onceki
-    # run'larda zaten kaydedilmis olan sohbetler burada GORUNMEZ, yani
-    # bu run'da tekrar tiklanip tekrar kaydedilirler (backup davranisi).
-    seen_file = current_seen_file()
-    if seen_file and seen_file.exists():
+    # TUM run_*/ klasorlerinin _seen.json'larinin BIRLESIMINE bakar -- bir
+    # onceki tasarim SADECE aktif run'a bakiyordu, bu da (watch_and_archive.py
+    # kod-duzeltmeleri yuzunden birden fazla kez restart edilince) daha ONCEKI
+    # bir run'da zaten yakalanmis bir sohbetin bu run'da hala "yeni" gorunup
+    # TEKRAR tiklanmasina yol aciyordu (gozlem: "bastan basladi" -- GitLab
+    # Merge Request Review gibi ilk run'da zaten yakalanmis basliklar tekrar
+    # tiklandi). Artik gecmiste HANGI run'da olursa olsun bir kere
+    # yakalanmis her basligi "zaten yapildi" sayiyoruz.
+    titles = set()
+    if not ARCHIVE_ROOT.exists():
+        return titles
+    for run_dir in ARCHIVE_ROOT.glob("run_*"):
+        seen_file = run_dir / "_seen.json"
+        if not seen_file.exists():
+            continue
         try:
             data = json.loads(seen_file.read_text())
-            return {v["title"] for v in data.values()}
+            titles.update(v["title"] for v in data.values())
         except Exception:
-            return set()
-    return set()
+            continue
+    return titles
 
 
 class CDP:
