@@ -62,7 +62,17 @@ re-captures everything again (a full new backup pass), it does not try to diff a
 previous runs. Use `python3 watch_and_archive.py --resume` instead when you're restarting
 after an interruption (a crash, a code fix) and want to pick up where the *same* pass left
 off rather than starting a whole new one — it continues writing into the most recent
-`run_*/` folder and skips whatever it already captured there. The archive folder lives
+`run_*/` folder and skips whatever it already captured there.
+
+`click_through_all.py` always skips anything already captured in *any* `run_*/` folder, not
+just the current one — so a title you got in an earlier pass won't get re-clicked in a later
+one, regardless of whether that later `watch_and_archive.py` run used `--resume` or started
+fresh. If you deliberately want a full independent re-backup that ignores history (start
+`watch_and_archive.py` *without* `--resume` first, so it opens a new empty folder, then):
+
+```bash
+python3 click_through_all.py --live --fresh
+``` The archive folder lives
 outside this repo and is never committed anywhere; treat it as sensitive — it contains the
 full text of whatever conversations you had open, across whatever projects you were using
 the IDE for.

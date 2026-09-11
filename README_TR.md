@@ -62,7 +62,18 @@ python3 click_through_all.py --live
 her şeyi yeniden tıklayıp yeniden yakalar (tam yeni bir yedekleme turu), önceki run'larla
 diff almaya çalışmaz. Bir kesinti sonrası (çökme, kod düzeltmesi) AYNI turdan devam etmek
 istiyorsan (yeni bir tur başlatmak yerine) `python3 watch_and_archive.py --resume` kullan —
-en son `run_*/` klasörüne yazmaya devam eder, orada zaten yakalanmış olanları atlar. Arşiv
+en son `run_*/` klasörüne yazmaya devam eder, orada zaten yakalanmış olanları atlar.
+
+`click_through_all.py` her zaman TÜM `run_*/` klasörlerinde (sadece aktif olanda değil)
+daha önce yakalanmış her şeyi atlar — yani önceki bir turda alınmış bir başlık, sonraki
+turda (o turun `watch_and_archive.py`'si `--resume` kullansın ya da yeni açılsın fark etmez)
+tekrar tıklanmaz. Geçmişi bilerek görmezden gelip tam bağımsız bir yeniden yedekleme
+istiyorsan (önce `watch_and_archive.py`'yi `--resume` OLMADAN başlatıp yeni boş bir klasör
+açtır, sonra):
+
+```bash
+python3 click_through_all.py --live --fresh
+``` Arşiv
 klasörü bu repo'nun dışında yaşar ve hiçbir yere commit edilmez; hassas veri gibi ele alın —
 IDE'yi hangi projeler için kullandıysanız, o projelerin açık olan konuşmalarının tam metnini
 içerir.

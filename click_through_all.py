@@ -28,6 +28,7 @@ import websockets
 
 PORT = 9223
 ARCHIVE_ROOT = Path.home() / "antigravity_chat_archive"
+CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
 
 ROW_PATTERN_JS = r"const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;"
 
@@ -182,19 +183,36 @@ def list_targets():
         return json.load(r)
 
 
-def load_captured_titles():
-    # TUM run_*/ klasorlerinin _seen.json'larinin BIRLESIMINE bakar -- bir
-    # onceki tasarim SADECE aktif run'a bakiyordu, bu da (watch_and_archive.py
-    # kod-duzeltmeleri yuzunden birden fazla kez restart edilince) daha ONCEKI
-    # bir run'da zaten yakalanmis bir sohbetin bu run'da hala "yeni" gorunup
-    # TEKRAR tiklanmasina yol aciyordu (gozlem: "bastan basladi" -- GitLab
-    # Merge Request Review gibi ilk run'da zaten yakalanmis basliklar tekrar
-    # tiklandi). Artik gecmiste HANGI run'da olursa olsun bir kere
-    # yakalanmis her basligi "zaten yapildi" sayiyoruz.
+def current_run_dir():
+    if CURRENT_RUN_POINTER.exists():
+        return Path(CURRENT_RUN_POINTER.read_text().strip())
+    return None
+
+
+def load_captured_titles(cross_run=True):
+    # Varsayilan (cross_run=True): TUM run_*/ klasorlerinin _seen.json'larinin
+    # BIRLESIMINE bakar -- bir onceki tasarim SADECE aktif run'a bakiyordu, bu
+    # da (watch_and_archive.py kod-duzeltmeleri yuzunden birden fazla kez
+    # restart edilince) daha ONCEKI bir run'da zaten yakalanmis bir sohbetin
+    # bu run'da hala "yeni" gorunup TEKRAR tiklanmasina yol aciyordu (gozlem:
+    # "bastan basladi" -- GitLab Merge Request Review gibi ilk run'da zaten
+    # yakalanmis basliklar tekrar tiklandi). Artik gecmiste HANGI run'da
+    # olursa olsun bir kere yakalanmis her basligi "zaten yapildi" sayiyoruz.
+    #
+    # cross_run=False (--fresh bayragi): SADECE aktif run'a bakar -- kullanici
+    # bilerek TAM YENI bir yedekleme turu istediginde (her seyi, daha once
+    # baska run'larda alinmis olsa bile, yeniden cekmek icin) kullanilir.
     titles = set()
     if not ARCHIVE_ROOT.exists():
         return titles
-    for run_dir in ARCHIVE_ROOT.glob("run_*"):
+
+    if cross_run:
+        run_dirs = list(ARCHIVE_ROOT.glob("run_*"))
+    else:
+        only = current_run_dir()
+        run_dirs = [only] if only else []
+
+    for run_dir in run_dirs:
         seen_file = run_dir / "_seen.json"
         if not seen_file.exists():
             continue
@@ -247,16 +265,18 @@ async def get_ws_url():
     return targets[0]["webSocketDebuggerUrl"]
 
 
-async def run(live, max_clicks):
+async def run(live, max_clicks, fresh=False):
     ws_url = await get_ws_url()
     clicked_keys = set()
     total = 0
+    cross_run = not fresh
 
     async with websockets.connect(ws_url, max_size=None) as ws:
         cdp = CDP(ws)
 
         reset = await cdp.eval(SCROLL_SIDEBAR_TO_TOP_EXPR, await_promise=True)
         print(f"[{time.strftime('%H:%M:%S')}] sidebar en tepeye sifirlandi (tekrarli): {reset}")
+        print(f"[{time.strftime('%H:%M:%S')}] mod: {'--fresh (sadece aktif run, gecmis gormezden gelinir)' if fresh else 'normal (tum run gecmisi birlesimi)'}")
 
         stale_rounds = 0
         last_scroll_top = -1
@@ -282,7 +302,7 @@ async def run(live, max_clicks):
                 # uygulamanin sidebar'i baska bir yere kaydirmis olma
                 # ihtimaline karsi.
                 await cdp.eval(SET_SIDEBAR_SCROLL_TMPL.replace("__SCROLL_TARGET__", str(sidebar_cursor)))
-                captured_titles = load_captured_titles()
+                captured_titles = load_captured_titles(cross_run)
                 rows_raw = await cdp.eval(FIND_ROWS_EXPR)
                 rows = json.loads(rows_raw) if rows_raw else []
             except Exception as e:
@@ -352,12 +372,12 @@ async def run(live, max_clicks):
                 # o eski islemi bitirmesi beklenir -- bu "takili kalmis gibi"
                 # gorunebilir, asagidaki kalp-atisi bunu ayirt etmeye yarar.
                 waited = 0.0
-                prev_count = len(load_captured_titles())
+                prev_count = len(load_captured_titles(cross_run))
                 caught = False
                 while waited < 320:
                     await asyncio.sleep(2.0)
                     waited += 2.0
-                    if len(load_captured_titles()) > prev_count:
+                    if len(load_captured_titles(cross_run)) > prev_count:
                         print(f"    izleyici yakaladi ({waited:.1f}sn)")
                         caught = True
                         break
@@ -376,5 +396,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="gercekten tikla (yoksa sadece ilk satiri BULUR, tiklamaz)")
     ap.add_argument("--max", type=int, default=500, help="en fazla kac tiklama")
+    ap.add_argument("--fresh", action="store_true",
+                     help="gecmisi (diger run klasorlerini) gormezden gel -- daha once baska "
+                          "bir run'da yakalanmis olsa bile HER SEYI yeniden tikla. Bunu "
+                          "watch_and_archive.py'yi (--resume OLMADAN) yeni bir run acmis "
+                          "haldeyken kullan.")
     args = ap.parse_args()
-    asyncio.run(run(args.live, args.max))
+    asyncio.run(run(args.live, args.max, args.fresh))
