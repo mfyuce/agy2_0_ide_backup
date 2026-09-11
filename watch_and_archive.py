@@ -47,6 +47,28 @@ def find_latest_run_dir():
     runs = sorted(p for p in ARCHIVE_ROOT.iterdir() if p.is_dir() and p.name.startswith("run_"))
     return runs[-1] if runs else None
 
+
+def captured_in_other_run(conv_id):
+    # Onceki run'lar (RUN_DIR disindakiler) BACKUP olarak dokunulmadan kalir,
+    # ama bu konusma DAHA ONCE (herhangi bir run'da) zaten yakalanmissa
+    # tekrar capture etmeye (uzun sohbetlerde onlarca saniye) gerek yok --
+    # click_through_all.py'nin capture-oncesi dedup'iyla ayni prensip,
+    # burada da (kullanicinin sohbeti elle tekrar acmasi gibi durumlar icin).
+    if not ARCHIVE_ROOT.exists():
+        return False
+    for run_dir in ARCHIVE_ROOT.glob("run_*"):
+        if run_dir == RUN_DIR:
+            continue
+        seen_file = run_dir / "_seen.json"
+        if not seen_file.exists():
+            continue
+        try:
+            if conv_id in json.loads(seen_file.read_text()):
+                return True
+        except Exception:
+            continue
+    return False
+
 SCROLL_AND_CAPTURE_EXPR = """
 (async () => {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -190,6 +212,8 @@ async def main(resume):
                 continue  # konusma disi sayfa (dashboard vb.)
             conv_id = m.group(1)
             if conv_id in seen:
+                continue
+            if captured_in_other_run(conv_id):
                 continue
 
             title = t.get("title", "untitled")
