@@ -73,10 +73,11 @@ açtır, sonra):
 
 ```bash
 python3 click_through_all.py --live --fresh
-``` Arşiv
-klasörü bu repo'nun dışında yaşar ve hiçbir yere commit edilmez; hassas veri gibi ele alın —
-IDE'yi hangi projeler için kullandıysanız, o projelerin açık olan konuşmalarının tam metnini
-içerir.
+```
+
+Arşiv klasörü bu repo'nun dışında yaşar ve hiçbir yere commit edilmez; hassas veri gibi ele
+alın — IDE'yi hangi projeler için kullandıysanız, o projelerin açık olan konuşmalarının tam
+metnini içerir.
 
 ## İki parça nasıl koordine oluyor
 

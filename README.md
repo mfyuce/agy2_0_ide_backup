@@ -72,10 +72,11 @@ fresh. If you deliberately want a full independent re-backup that ignores histor
 
 ```bash
 python3 click_through_all.py --live --fresh
-``` The archive folder lives
-outside this repo and is never committed anywhere; treat it as sensitive — it contains the
-full text of whatever conversations you had open, across whatever projects you were using
-the IDE for.
+```
+
+The archive folder lives outside this repo and is never committed anywhere; treat it as
+sensitive — it contains the full text of whatever conversations you had open, across
+whatever projects you were using the IDE for.
 
 ## How the two pieces coordinate
 
