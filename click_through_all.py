@@ -21,6 +21,7 @@ Kullanim:
 import argparse
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 import urllib.request
@@ -30,7 +31,7 @@ PORT = 9223
 ARCHIVE_ROOT = Path.home() / "antigravity_chat_archive"
 CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
 
-ROW_PATTERN_JS = r"const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;"
+ROW_PATTERN_JS = r"const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;"
 
 FIND_ROWS_EXPR = r"""
 (function() {
@@ -83,7 +84,7 @@ FIND_SCROLL_MEASURE_EXPR_TMPL = r"""
 # listesini kaydiriyoruz.
 EXPAND_AND_SCROLL_EXPR = r"""
 (function(){
-  const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;
+  const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;
   const seeAlls = Array.from(document.querySelectorAll('div,li,a,button'))
     .filter(el => /^See all \(\d+\)$/.test((el.innerText||'').trim()));
   let clicked = 0;
@@ -118,7 +119,7 @@ EXPAND_AND_SCROLL_EXPR = r"""
 SCROLL_SIDEBAR_TO_TOP_EXPR = r"""
 (async function(){
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;
+  const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;
   function countRowDescendants(container) {
     let count = 0;
     const cand = container.querySelectorAll('div,li,a,button');
@@ -155,7 +156,7 @@ SCROLL_SIDEBAR_TO_TOP_EXPR = r"""
 # scroll'una guvenmiyoruz.
 SET_SIDEBAR_SCROLL_TMPL = r"""
 (function(){
-  const timePattern = /^(\d+[smhd]|\d+mo|\d+y)$/;
+  const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;
   function countRowDescendants(container) {
     let count = 0;
     const cand = container.querySelectorAll('div,li,a,button');
@@ -224,19 +225,51 @@ def load_captured_titles(cross_run=True):
     return titles
 
 
+def count_captured_entries(cross_run=True):
+    # load_captured_titles() basliga gore tekillestirir -- bu yuzden ayni
+    # baslikli IKINCI bir sohbet yakalandiginda kumenin boyutu ARTMAZ ve
+    # "izleyici yakaladi mi" bekleyisi (asagida run() icinde) bunu asla
+    # goremeyip suresi dolunca yanlislikla timeout'a duser (gozlem: sohbet
+    # aslinda basariyla kaydedildi ama script "basarisiz olabilir" uyarisi
+    # verip devam etti). Ilerleme olcumu icin bunun yerine TOPLAM (dedup'siz)
+    # kayit sayisini kullaniyoruz -- bu, mukerrer basliklarda bile her yeni
+    # yakalamada kesinlikle artar.
+    total = 0
+    if not ARCHIVE_ROOT.exists():
+        return total
+    if cross_run:
+        run_dirs = list(ARCHIVE_ROOT.glob("run_*"))
+    else:
+        only = current_run_dir()
+        run_dirs = [only] if only else []
+    for run_dir in run_dirs:
+        seen_file = run_dir / "_seen.json"
+        if not seen_file.exists():
+            continue
+        try:
+            total += len(json.loads(seen_file.read_text()))
+        except Exception:
+            continue
+    return total
+
+
 class CDP:
     def __init__(self, ws):
         self.ws = ws
         self.next_id = 1
 
-    async def send(self, method, params):
+    async def send(self, method, params, timeout=15.0):
         mid = self.next_id
         self.next_id += 1
         await self.ws.send(json.dumps({"id": mid, "method": method, "params": params}))
-        while True:
-            resp = json.loads(await self.ws.recv())
-            if resp.get("id") == mid:
-                return resp
+
+        async def _wait_for_reply():
+            while True:
+                resp = json.loads(await self.ws.recv())
+                if resp.get("id") == mid:
+                    return resp
+
+        return await asyncio.wait_for(_wait_for_reply(), timeout=timeout)
 
     async def eval(self, expr, await_promise=False):
         resp = await self.send("Runtime.evaluate", {
@@ -259,13 +292,19 @@ class CDP:
 
 
 async def get_ws_url():
-    targets = [t for t in list_targets() if t.get("type") == "page"]
+    targets = [t for t in await asyncio.to_thread(list_targets) if t.get("type") == "page"]
     if not targets:
         raise RuntimeError("Antigravity page target bulunamadi (uygulama --remote-debugging-port ile acik mi?)")
+    if len(targets) > 1:
+        print(f"[UYARI] {len(targets)} adet 'page' target bulundu, ilki kullanilacak "
+              f"(targets[0] varsayimi hala kirilgan -- yanlis pencereye baglanirsak "
+              f"asagidaki listeden dogrusunu ayirt et):")
+        for t in targets:
+            print(f"    - id={t.get('id')} title={t.get('title')!r} url={t.get('url')!r}")
     return targets[0]["webSocketDebuggerUrl"]
 
 
-async def run(live, max_clicks, fresh=False):
+async def run(live, max_clicks, fresh=False, timeout=320.0):
     ws_url = await get_ws_url()
     clicked_keys = set()
     total = 0
@@ -372,19 +411,19 @@ async def run(live, max_clicks, fresh=False):
                 # o eski islemi bitirmesi beklenir -- bu "takili kalmis gibi"
                 # gorunebilir, asagidaki kalp-atisi bunu ayirt etmeye yarar.
                 waited = 0.0
-                prev_count = len(load_captured_titles(cross_run))
+                prev_count = count_captured_entries(cross_run)
                 caught = False
-                while waited < 320:
+                while waited < timeout:
                     await asyncio.sleep(2.0)
                     waited += 2.0
-                    if len(load_captured_titles(cross_run)) > prev_count:
+                    if count_captured_entries(cross_run) > prev_count:
                         print(f"    izleyici yakaladi ({waited:.1f}sn)")
                         caught = True
                         break
                     if int(waited) % 20 == 0:
                         print(f"    ... hala bekleniyor ({waited:.0f}sn, canli -- izleyici muhtemelen uzun bir sohbeti scroll ediyor)")
                 if not caught:
-                    print(f"    UYARI: izleyici {waited:.1f}sn'de yakalamadi -- tiklama isteFAILmis olabilir, devam ediliyor (bir sonraki --live calistirmasinda otomatik yeniden denenecek)")
+                    print(f"    UYARI: izleyici {waited:.1f}sn'de yakalamadi -- tiklama basarisiz olmus olabilir, devam ediliyor (bir sonraki --live calistirmasinda otomatik yeniden denenecek)")
             except Exception as e:
                 print(f"    HATA (bu satir atlaniyor, script devam ediyor): {type(e).__name__}: {e}")
                 continue
@@ -401,5 +440,17 @@ if __name__ == "__main__":
                           "bir run'da yakalanmis olsa bile HER SEYI yeniden tikla. Bunu "
                           "watch_and_archive.py'yi (--resume OLMADAN) yeni bir run acmis "
                           "haldeyken kullan.")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("CDP_PORT", PORT)),
+                     help="CDP hata ayiklama portu (varsayilan: env CDP_PORT ya da 9223)")
+    ap.add_argument("--archive-dir", type=str, default=os.environ.get("ARCHIVE_DIR", ""),
+                     help="arsiv kok dizini (varsayilan: env ARCHIVE_DIR ya da ~/antigravity_chat_archive)")
+    ap.add_argument("--timeout", type=float, default=float(os.environ.get("CAPTURE_TIMEOUT", 320)),
+                     help="izleyicinin bir sohbeti yakalamasini bekleme azami suresi, saniye (varsayilan: 320)")
     args = ap.parse_args()
-    asyncio.run(run(args.live, args.max, args.fresh))
+
+    PORT = args.port
+    if args.archive_dir:
+        ARCHIVE_ROOT = Path(args.archive_dir).expanduser()
+        CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
+
+    asyncio.run(run(args.live, args.max, args.fresh, timeout=args.timeout))

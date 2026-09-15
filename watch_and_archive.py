@@ -23,8 +23,11 @@ icin): <run_klasoru>/_seen.json.
 """
 import argparse
 import asyncio
+import html
 import json
+import os
 import re
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -35,6 +38,11 @@ PORT = 9223
 ARCHIVE_ROOT = Path.home() / "antigravity_chat_archive"
 CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
 POLL_INTERVAL = 1.5
+# SCROLL_AND_CAPTURE_EXPR icindeki JS, cok uzun sohbetlerde bulut-senkron
+# lazy-load nedeniyle ~150 * 1.8sn + 4sn + 1.5sn ~ 280sn'ye kadar surebilir --
+# CDP yaniti icin zaman asimi bunun rahatca ustunde olmali (asagidaki
+# capture()'daki asyncio.wait_for).
+CDP_RESPONSE_TIMEOUT = 300.0
 
 # main()'de --resume'a gore belirlenir (yeni run mi, en son run'a devam mi).
 RUN_DIR = None
@@ -48,26 +56,39 @@ def find_latest_run_dir():
     return runs[-1] if runs else None
 
 
+_other_runs_seen_cache = None
+_other_runs_cache_dirs = None
+
+
 def captured_in_other_run(conv_id):
     # Onceki run'lar (RUN_DIR disindakiler) BACKUP olarak dokunulmadan kalir,
     # ama bu konusma DAHA ONCE (herhangi bir run'da) zaten yakalanmissa
     # tekrar capture etmeye (uzun sohbetlerde onlarca saniye) gerek yok --
     # click_through_all.py'nin capture-oncesi dedup'iyla ayni prensip,
     # burada da (kullanicinin sohbeti elle tekrar acmasi gibi durumlar icin).
+    #
+    # Diger run'larin _seen.json icerigi bu process boyunca degismez (onlar
+    # "dokunulmadan kalan backup") -- bu yuzden her 1.5sn'lik pollde hepsini
+    # diskten yeniden okuyup json.loads etmek yerine, bellek-ici bir kumeye
+    # BIR KERE cikarip onbelleklendiriyoruz. Sadece yeni bir run klasoru
+    # ortaya cikarsa (ki bu process suresince normalde olmaz) yeniden tariyoruz.
+    global _other_runs_seen_cache, _other_runs_cache_dirs
     if not ARCHIVE_ROOT.exists():
         return False
-    for run_dir in ARCHIVE_ROOT.glob("run_*"):
-        if run_dir == RUN_DIR:
-            continue
-        seen_file = run_dir / "_seen.json"
-        if not seen_file.exists():
-            continue
-        try:
-            if conv_id in json.loads(seen_file.read_text()):
-                return True
-        except Exception:
-            continue
-    return False
+    current_dirs = frozenset(p for p in ARCHIVE_ROOT.glob("run_*") if p != RUN_DIR)
+    if _other_runs_seen_cache is None or current_dirs != _other_runs_cache_dirs:
+        cache = set()
+        for run_dir in current_dirs:
+            seen_file = run_dir / "_seen.json"
+            if not seen_file.exists():
+                continue
+            try:
+                cache.update(json.loads(seen_file.read_text()).keys())
+            except Exception:
+                continue
+        _other_runs_seen_cache = cache
+        _other_runs_cache_dirs = current_dirs
+    return conv_id in _other_runs_seen_cache
 
 SCROLL_AND_CAPTURE_EXPR = """
 (async () => {
@@ -155,15 +176,20 @@ async def capture(ws_url):
                 "awaitPromise": True,
             },
         }))
-        while True:
-            resp = json.loads(await ws.recv())
-            if resp.get("id") == 1:
-                result = resp.get("result", {}).get("result", {})
-                return result.get("value", "")
+
+        async def _wait_for_reply():
+            while True:
+                resp = json.loads(await ws.recv())
+                if resp.get("id") == 1:
+                    result = resp.get("result", {}).get("result", {})
+                    return result.get("value", "")
+
+        return await asyncio.wait_for(_wait_for_reply(), timeout=CDP_RESPONSE_TIMEOUT)
 
 
 def safe_name(s):
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)[:100] or "untitled"
+    s = html.unescape(s)
+    return re.sub(r'[\\/:*?"<>|\x00]+', "_", s).strip()[:100] or "untitled"
 
 
 def load_seen():
@@ -172,13 +198,32 @@ def load_seen():
     return {}
 
 
+def atomic_write_text(path, content):
+    # click_through_all.py ayni anda bu dosyalari (SEEN_FILE, CURRENT_RUN_POINTER)
+    # okuyabiliyor -- dogrudan write_text() bir crash/SIGINT ile yarida kesilirse
+    # ya da okuyucu tam yazma sirasinda rastlarsa dosya 0 bayt/bozuk JSON kalabilir.
+    # Once gecici dosyaya yaz, sonra os.replace() (atomic rename) ile degistir --
+    # okuyucu her zaman ya eski-tam ya da yeni-tam icerigi gorur.
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_seen(seen):
-    SEEN_FILE.write_text(json.dumps(seen, indent=2, ensure_ascii=False))
+    atomic_write_text(SEEN_FILE, json.dumps(seen, indent=2, ensure_ascii=False))
 
 
 async def main(resume):
     global RUN_DIR, SEEN_FILE
-    ARCHIVE_ROOT.mkdir(exist_ok=True)
+    ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
 
     if resume:
         RUN_DIR = find_latest_run_dir()
@@ -190,7 +235,7 @@ async def main(resume):
 
     RUN_DIR.mkdir(exist_ok=True)
     SEEN_FILE = RUN_DIR / "_seen.json"
-    CURRENT_RUN_POINTER.write_text(str(RUN_DIR))
+    atomic_write_text(CURRENT_RUN_POINTER, str(RUN_DIR))
     seen = load_seen()
     tag = "DEVAM (resume)" if resume else "YENI RUN"
     print(f"[{time.strftime('%H:%M:%S')}] {tag}: port {PORT} -> {RUN_DIR}", flush=True)
@@ -199,7 +244,7 @@ async def main(resume):
 
     while True:
         try:
-            targets = [t for t in list_targets() if t.get("type") == "page"]
+            targets = [t for t in await asyncio.to_thread(list_targets) if t.get("type") == "page"]
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] list_targets hata: {e}", flush=True)
             await asyncio.sleep(3)
@@ -235,7 +280,7 @@ async def main(resume):
             # tiklamis olabilir -- ayni target, farkli URL. Kaydetmeden
             # once hedefin hala AYNI konusmada oldugunu dogrula.
             try:
-                current_targets = {x.get("id"): x.get("url", "") for x in list_targets()}
+                current_targets = {x.get("id"): x.get("url", "") for x in await asyncio.to_thread(list_targets)}
             except Exception:
                 current_targets = {}
             now_url = current_targets.get(target_id, "")
@@ -256,7 +301,20 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--resume", action="store_true",
                      help="yeni run acma, en son run klasorune devam et (zaten kaydedilmisleri atlar)")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("CDP_PORT", PORT)),
+                     help="CDP hata ayiklama portu (varsayilan: env CDP_PORT ya da 9223)")
+    ap.add_argument("--archive-dir", type=str, default=os.environ.get("ARCHIVE_DIR", ""),
+                     help="arsiv kok dizini (varsayilan: env ARCHIVE_DIR ya da ~/antigravity_chat_archive)")
+    ap.add_argument("--poll-interval", type=float, default=float(os.environ.get("POLL_INTERVAL", POLL_INTERVAL)),
+                     help="CDP hedef listesini kac saniyede bir tarayacagi (varsayilan: 1.5)")
     args = ap.parse_args()
+
+    PORT = args.port
+    if args.archive_dir:
+        ARCHIVE_ROOT = Path(args.archive_dir).expanduser()
+        CURRENT_RUN_POINTER = ARCHIVE_ROOT / "_current_run.txt"
+    POLL_INTERVAL = args.poll_interval
+
     try:
         asyncio.run(main(args.resume))
     except KeyboardInterrupt:
