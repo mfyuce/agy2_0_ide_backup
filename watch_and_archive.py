@@ -224,6 +224,7 @@ def save_seen(seen):
 async def main(resume):
     global RUN_DIR, SEEN_FILE
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(ARCHIVE_ROOT, 0o700)
 
     if resume:
         RUN_DIR = find_latest_run_dir()

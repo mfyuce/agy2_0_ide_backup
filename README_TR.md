@@ -104,4 +104,16 @@ metnini içerir.
 - Buradaki her şey Antigravity IDE'nin şu anki (2026) DOM yapısına ve CDP maruziyetine özel.
   Uygulama arayüzünü değiştirirse sezgilerin güncellenmesi gerekebilir.
 
+## Güvenlik notları
+
+- `--remote-debugging-port=9223`, `--remote-debugging-address` bayrağı verilmeden kullanılırsa
+  sadece loopback'e bağlanır (standart Chromium/Electron varsayılanı). Port ağdan erişilebilir
+  değildir, yalnız aynı makinedeki süreçlerden erişilebilir.
+- `--remote-allow-origins=*`, o debug oturumuna WebSocket üzerinden *hangi yerel origin'lerin*
+  bağlanabileceğini genişletir (örneğin aynı makinede açık olan başka bir web sayfası da dahil).
+  Script'lerin bağlanabilmesi için burada gerekli. Debug portunu kalıcı açık bırakmak yerine
+  sadece bir yedekleme turu süresince açmayı tercih edin.
+- `~/antigravity_chat_archive/` artık `chmod 700` (sadece sahibi erişebilir) ile oluşturuluyor,
+  çünkü yedeklediğiniz her projeye ait konuşmaların tam metnini içeriyor.
+
 MIT lisanslı — bkz. [`LICENSE`](LICENSE).

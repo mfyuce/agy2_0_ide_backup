@@ -102,4 +102,16 @@ whatever projects you were using the IDE for.
 - Everything here is specific to Antigravity IDE's current (2026) DOM structure and CDP
   exposure. If the app changes its UI, the heuristics may need updating.
 
+## Security notes
+
+- `--remote-debugging-port=9223` with no `--remote-debugging-address` flag binds to loopback
+  only (the standard Chromium/Electron default). The port isn't reachable from the network,
+  only from processes on the same machine.
+- `--remote-allow-origins=*` widens *which local origins* are allowed to attach to that debug
+  session over WebSocket (e.g. any other webpage you happen to have open in a browser on the
+  same machine). It's required here for the scripts to connect at all. Prefer enabling the
+  debug port only for the duration of a backup run rather than leaving it on persistently.
+- `~/antigravity_chat_archive/` is created with `chmod 700` (owner-only access) since it holds
+  the full text of every conversation you back up, across every project.
+
 MIT licensed — see [`LICENSE`](LICENSE).
