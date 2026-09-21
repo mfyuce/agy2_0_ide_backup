@@ -35,15 +35,20 @@ ROW_PATTERN_JS = r"const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yes
 
 FIND_ROWS_EXPR = r"""
 (function() {
-  """ + ROW_PATTERN_JS + r"""
-  const all = document.querySelectorAll('div,li,a,button');
+  // Her satir artik data-cascade-id (gercek conv_id, UUID) tasiyan stabil bir
+  // data-testid uzerinden bulunuyor -- innerText satir-sayisi sezgisi DEGIL.
+  // Kasitli olarak eski sezgiye FALLBACK YOK: o sezgi zaten Kritik #1'in
+  // (baslik carpismasinda sessiz veri kaybi) kaynagiydi, sessizce geri donmek
+  // ayni riski gizlice geri getirir. Bu selector hic eslesmezse asagidaki
+  // ana dongudeki stale-limit/"yeni satir yok" mekanizmasi zaten gorunur
+  // sekilde durur.
   const rows = [];
-  for (const el of all) {
-    const t = (el.innerText || '').trim();
-    const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
-    if (lines.length === 2 && timePattern.test(lines[1]) && lines[0].length > 1) {
-      rows.push({title: lines[0], time: lines[1]});
-    }
+  for (const row of document.querySelectorAll('[data-testid="conversation-row-sidebar"]')) {
+    const convId = row.getAttribute('data-cascade-id');
+    const a = row.querySelector('a[aria-label]');
+    if (!convId || !a) continue;
+    const lines = (row.innerText || '').trim().split('\n').map(s => s.trim()).filter(Boolean);
+    rows.push({convId: convId, title: a.getAttribute('aria-label') || '', time: lines[1] || ''});
   }
   return JSON.stringify(rows);
 })()
@@ -57,16 +62,12 @@ FIND_ROWS_EXPR = r"""
 FIND_SCROLL_MEASURE_EXPR_TMPL = r"""
 (async function() {{
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  """ + ROW_PATTERN_JS + r"""
-  const wantTitle = {title_json};
-  const wantTime = {time_json};
-  const all = document.querySelectorAll('div,li,a,button');
-  let target = null;
-  for (const el of all) {{
-    const t = (el.innerText || '').trim();
-    const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
-    if (lines.length === 2 && lines[0] === wantTitle && lines[1] === wantTime) {{ target = el; break; }}
-  }}
+  const wantConvId = {conv_id_json};
+  // data-cascade-id ile DOGRUDAN eslestirme -- ayni baslik+zaman'a sahip
+  // farkli sohbetler arasinda artik belirsizlik yok (eskiden innerText
+  // metnini yeniden tarayip title+time'a gore ariyordu).
+  const target = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"]'))
+    .find(row => row.getAttribute('data-cascade-id') === wantConvId);
   if (!target) return JSON.stringify({{found: false}});
   target.scrollIntoView({{block: 'center', inline: 'nearest', behavior: 'instant'}});
   await sleep(400);
@@ -79,21 +80,21 @@ FIND_SCROLL_MEASURE_EXPR_TMPL = r"""
 }})()
 """
 
-# Scroll edilecek container'i "en az 3 sohbet-satiri iceren" olarak sec --
-# boylece yanlislikla sag taraftaki chat panelini degil, gercekten sidebar
-# listesini kaydiriyoruz.
-EXPAND_AND_SCROLL_EXPR = r"""
-(function(){
-  const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;
-  const seeAlls = Array.from(document.querySelectorAll('div,li,a,button'))
-    .filter(el => /^See all \(\d+\)$/.test((el.innerText||'').trim()));
-  let clicked = 0;
-  for (const el of seeAlls) { el.click(); clicked++; }
-
+# Sidebar'i ONCE dogrulanmis data-testid ile bul (bkz. DONE.md 2026-09-21).
+# Bulunamazsa (UI degismis olabilir) eski "en az 3 sohbet-satiri iceren
+# scrollable" sezgisine DUS -- row-detection'in aksine burada sessiz fallback
+# kabul edilebilir, cunku en kotu ihtimalle scroll yanlis/hic konteynere
+# gitmez (gorunur, zararsiz), Kritik #1'deki gibi sessiz veri kaybina yol
+# acmaz. Uc cagiran yer de (asagida) bunu ortak kullaniyor -- eskiden ayni
+# sezgi 3 kopya halinde tekrarlaniyordu.
+FIND_SIDEBAR_JS = r"""
+function findSidebarContainers() {
+  const direct = document.querySelector('[data-testid="conversation-list-sidebar"]');
+  if (direct) return [direct];
+  """ + ROW_PATTERN_JS + r"""
   function countRowDescendants(container) {
     let count = 0;
-    const cand = container.querySelectorAll('div,li,a,button');
-    for (const el of cand) {
+    for (const el of container.querySelectorAll('div,li,a,button')) {
       const t = (el.innerText || '').trim();
       const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
       if (lines.length === 2 && timePattern.test(lines[1])) {
@@ -103,44 +104,39 @@ EXPAND_AND_SCROLL_EXPR = r"""
     }
     return false;
   }
+  return Array.from(document.querySelectorAll('*'))
+    .filter(e => e.scrollHeight > e.clientHeight + 50)
+    .filter(countRowDescendants);
+}
+"""
 
-  const candidates = Array.from(document.querySelectorAll('*'))
-    .filter(e => e.scrollHeight > e.clientHeight + 50);
-  const sidebarLike = candidates.filter(countRowDescendants);
+EXPAND_AND_SCROLL_EXPR = r"""
+(function(){
+  """ + FIND_SIDEBAR_JS + r"""
+  const seeAlls = Array.from(document.querySelectorAll('div,li,a,button'))
+    .filter(el => /^See all \(\d+\)$/.test((el.innerText||'').trim()));
+  let clicked = 0;
+  for (const el of seeAlls) { el.click(); clicked++; }
+
+  const sidebarLike = findSidebarContainers();
   for (const e of sidebarLike) { e.scrollTop += 600; }
   const maxScrollTop = Math.max(0, ...sidebarLike.map(e => e.scrollTop));
   const maxPossible = Math.max(0, ...sidebarLike.map(e => e.scrollHeight - e.clientHeight));
   return JSON.stringify({seeAllClicked: clicked, sidebarContainers: sidebarLike.length,
-                          totalScrollables: candidates.length, scrollTop: maxScrollTop,
-                          maxPossible: maxPossible});
+                          scrollTop: maxScrollTop, maxPossible: maxPossible});
 })()
 """
 
 SCROLL_SIDEBAR_TO_TOP_EXPR = r"""
 (async function(){
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;
-  function countRowDescendants(container) {
-    let count = 0;
-    const cand = container.querySelectorAll('div,li,a,button');
-    for (const el of cand) {
-      const t = (el.innerText || '').trim();
-      const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
-      if (lines.length === 2 && timePattern.test(lines[1])) {
-        count++;
-        if (count >= 3) return true;
-      }
-    }
-    return false;
-  }
+  """ + FIND_SIDEBAR_JS + r"""
   // Uygulama, aktif/son-tiklanan sohbeti sidebar'da gorunur tutmak icin
   // otomatik geri kaydiriyor olabilir -- tek seferlik reset bunu yenemez.
   // Birkac kez, aralarla, tekrar tekrar sifirla.
   let lastCount = -1;
   for (let i = 0; i < 10; i++) {
-    const candidates = Array.from(document.querySelectorAll('*'))
-      .filter(e => e.scrollHeight > e.clientHeight + 50);
-    const sidebarLike = candidates.filter(countRowDescendants);
+    const sidebarLike = findSidebarContainers();
     for (const e of sidebarLike) { e.scrollTop = 0; }
     lastCount = sidebarLike.length;
     await sleep(350);
@@ -156,23 +152,8 @@ SCROLL_SIDEBAR_TO_TOP_EXPR = r"""
 # scroll'una guvenmiyoruz.
 SET_SIDEBAR_SCROLL_TMPL = r"""
 (function(){
-  const timePattern = /^(\d+[smhdw]|\d+mo|\d+y|now|just now|yesterday)$/i;
-  function countRowDescendants(container) {
-    let count = 0;
-    const cand = container.querySelectorAll('div,li,a,button');
-    for (const el of cand) {
-      const t = (el.innerText || '').trim();
-      const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
-      if (lines.length === 2 && timePattern.test(lines[1])) {
-        count++;
-        if (count >= 3) return true;
-      }
-    }
-    return false;
-  }
-  const candidates = Array.from(document.querySelectorAll('*'))
-    .filter(e => e.scrollHeight > e.clientHeight + 50);
-  const sidebarLike = candidates.filter(countRowDescendants);
+  """ + FIND_SIDEBAR_JS + r"""
+  const sidebarLike = findSidebarContainers();
   for (const e of sidebarLike) { e.scrollTop = __SCROLL_TARGET__; }
   return JSON.stringify({containers: sidebarLike.length});
 })()
@@ -190,7 +171,7 @@ def current_run_dir():
     return None
 
 
-def load_captured_titles(cross_run=True):
+def load_captured_conv_ids(cross_run=True):
     # Varsayilan (cross_run=True): TUM run_*/ klasorlerinin _seen.json'larinin
     # BIRLESIMINE bakar -- bir onceki tasarim SADECE aktif run'a bakiyordu, bu
     # da (watch_and_archive.py kod-duzeltmeleri yuzunden birden fazla kez
@@ -198,14 +179,21 @@ def load_captured_titles(cross_run=True):
     # bu run'da hala "yeni" gorunup TEKRAR tiklanmasina yol aciyordu (gozlem:
     # "bastan basladi" -- GitLab Merge Request Review gibi ilk run'da zaten
     # yakalanmis basliklar tekrar tiklandi). Artik gecmiste HANGI run'da
-    # olursa olsun bir kere yakalanmis her basligi "zaten yapildi" sayiyoruz.
+    # olursa olsun bir kere yakalanmis her conv_id'yi "zaten yapildi" sayiyoruz.
+    #
+    # Eskiden BASLIK metnine gore tekillestiriyordu (v["title"]) -- bu, farkli
+    # projelerdeki ayni basligi tasiyan sohbetlerin (Kritik #1) sessizce hic
+    # yedeklenmemesine yol aciyordu (bkz. DONE.md 2026-09-21: canli DOM
+    # incelemesiyle dogrulandi, sidebar satirlarinda gercek conv_id mevcut).
+    # _seen.json zaten conv_id (UUID) ile anahtarlanmis oldugu icin
+    # (watch_and_archive.py) dogrudan dict key'lerini kullanmak yeterli.
     #
     # cross_run=False (--fresh bayragi): SADECE aktif run'a bakar -- kullanici
     # bilerek TAM YENI bir yedekleme turu istediginde (her seyi, daha once
     # baska run'larda alinmis olsa bile, yeniden cekmek icin) kullanilir.
-    titles = set()
+    conv_ids = set()
     if not ARCHIVE_ROOT.exists():
-        return titles
+        return conv_ids
 
     if cross_run:
         run_dirs = list(ARCHIVE_ROOT.glob("run_*"))
@@ -219,38 +207,10 @@ def load_captured_titles(cross_run=True):
             continue
         try:
             data = json.loads(seen_file.read_text())
-            titles.update(v["title"] for v in data.values())
+            conv_ids.update(data.keys())
         except Exception:
             continue
-    return titles
-
-
-def count_captured_entries(cross_run=True):
-    # load_captured_titles() basliga gore tekillestirir -- bu yuzden ayni
-    # baslikli IKINCI bir sohbet yakalandiginda kumenin boyutu ARTMAZ ve
-    # "izleyici yakaladi mi" bekleyisi (asagida run() icinde) bunu asla
-    # goremeyip suresi dolunca yanlislikla timeout'a duser (gozlem: sohbet
-    # aslinda basariyla kaydedildi ama script "basarisiz olabilir" uyarisi
-    # verip devam etti). Ilerleme olcumu icin bunun yerine TOPLAM (dedup'siz)
-    # kayit sayisini kullaniyoruz -- bu, mukerrer basliklarda bile her yeni
-    # yakalamada kesinlikle artar.
-    total = 0
-    if not ARCHIVE_ROOT.exists():
-        return total
-    if cross_run:
-        run_dirs = list(ARCHIVE_ROOT.glob("run_*"))
-    else:
-        only = current_run_dir()
-        run_dirs = [only] if only else []
-    for run_dir in run_dirs:
-        seen_file = run_dir / "_seen.json"
-        if not seen_file.exists():
-            continue
-        try:
-            total += len(json.loads(seen_file.read_text()))
-        except Exception:
-            continue
-    return total
+    return conv_ids
 
 
 class CDP:
@@ -283,10 +243,8 @@ class CDP:
         await asyncio.sleep(0.05)
         await self.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
 
-    async def find_scroll_measure(self, title, time_label):
-        expr = FIND_SCROLL_MEASURE_EXPR_TMPL.format(
-            title_json=json.dumps(title), time_json=json.dumps(time_label),
-        )
+    async def find_scroll_measure(self, conv_id):
+        expr = FIND_SCROLL_MEASURE_EXPR_TMPL.format(conv_id_json=json.dumps(conv_id))
         raw = await self.eval(expr, await_promise=True)
         return json.loads(raw) if raw else {"found": False}
 
@@ -306,7 +264,7 @@ async def get_ws_url():
 
 async def run(live, max_clicks, fresh=False, timeout=320.0):
     ws_url = await get_ws_url()
-    clicked_keys = set()
+    clicked_conv_ids = set()
     total = 0
     cross_run = not fresh
 
@@ -326,13 +284,16 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
         # yuzden her tarama ONCESINDE kendi cursor'umuzu YENIDEN DAYATIYORUZ,
         # uygulamanin son biraktigi pozisyona guvenmiyoruz.
         sidebar_cursor = 0
-        # "yeni satir yok" TEK BASINA pes etme sebebi degil -- ayni (baslik,zaman)
-        # cifti farkli projelerde tekrar edebiliyor (ornek: "GitLab Merge Request
-        # Review" birden fazla projede), bu da scroll GERCEKTEN ilerlerken bile
-        # bir sure "hepsi zaten yakalanmis" gibi gorunmesine yol acabiliyor.
-        # Bu yuzden scrollTop'un KENDISI de ilerliyor mu diye ayrica takip
-        # ediyoruz: pozisyon hala degisiyorsa sayaci SIFIRLA, gercekten dibe
-        # vurunca (pozisyon da sabitlenince) pes et.
+        # "yeni satir yok" TEK BASINA pes etme sebebi degil -- virtualized liste
+        # scroll GERCEKTEN ilerlerken bile DOM'a henuz yeni satirlari render
+        # etmemis olabilir, bu da bir tarama turunde gecici olarak "hepsi zaten
+        # yakalanmis/hic satir yok" gibi gorunmesine yol acabiliyor. Bu yuzden
+        # scrollTop'un KENDISI de ilerliyor mu diye ayrica takip ediyoruz:
+        # pozisyon hala degisiyorsa sayaci SIFIRLA, gercekten dibe vurunca
+        # (pozisyon da sabitlenince) pes et. (Eskiden burada ayrica baslik+zaman
+        # cift-carpismasi da bir sebep olarak sayiliyordu -- artik dedup gercek
+        # conv_id'ye gore oldugu icin (bkz. DONE.md 2026-09-21) o senaryo artik
+        # gecerli degil.)
         STALE_LIMIT = 40
 
         while total < max_clicks and stale_rounds < STALE_LIMIT:
@@ -341,7 +302,7 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                 # uygulamanin sidebar'i baska bir yere kaydirmis olma
                 # ihtimaline karsi.
                 await cdp.eval(SET_SIDEBAR_SCROLL_TMPL.replace("__SCROLL_TARGET__", str(sidebar_cursor)))
-                captured_titles = load_captured_titles(cross_run)
+                captured_conv_ids = load_captured_conv_ids(cross_run)
                 rows_raw = await cdp.eval(FIND_ROWS_EXPR)
                 rows = json.loads(rows_raw) if rows_raw else []
             except Exception as e:
@@ -350,8 +311,8 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                 continue
 
             todo = [r for r in rows
-                    if (r["title"] + "|" + r["time"]) not in clicked_keys
-                    and r["title"] not in captured_titles]
+                    if r["convId"] not in clicked_conv_ids
+                    and r["convId"] not in captured_conv_ids]
 
             if not todo:
                 try:
@@ -364,9 +325,9 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                 cur_top = exp_data.get("scrollTop")
                 max_top = exp_data.get("maxPossible")
                 if cur_top is not None and cur_top != last_scroll_top:
-                    # pozisyon hala ilerliyor -- "yeni satir yok" gorunse de
-                    # bu GERCEK bir dip degil, sadece baslik-eslesmesi kacirmis
-                    # olabilir. Sayaci sifirla, pes etme.
+                    # pozisyon hala ilerliyor -- "yeni satir yok" gorunse de bu
+                    # GERCEK bir dip degil, virtualized liste henuz render
+                    # etmemis olabilir. Sayaci sifirla, pes etme.
                     stale_rounds = 0
                     last_scroll_top = cur_top
                     sidebar_cursor = cur_top
@@ -379,12 +340,11 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
 
             stale_rounds = 0
             row = todo[0]
-            key = row["title"] + "|" + row["time"]
-            clicked_keys.add(key)
-            print(f"[{time.strftime('%H:%M:%S')}] hedef: {row['title']} ({row['time']})")
+            clicked_conv_ids.add(row["convId"])
+            print(f"[{time.strftime('%H:%M:%S')}] hedef: {row['title']} ({row['time']}) conv_id={row['convId'][:8]}")
 
             try:
-                measured = await cdp.find_scroll_measure(row["title"], row["time"])
+                measured = await cdp.find_scroll_measure(row["convId"])
                 if not measured.get("found"):
                     print("    UYARI: scrollIntoView sirasinda element kayboldu (virtualized liste), atlaniyor")
                     continue
@@ -411,12 +371,11 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                 # o eski islemi bitirmesi beklenir -- bu "takili kalmis gibi"
                 # gorunebilir, asagidaki kalp-atisi bunu ayirt etmeye yarar.
                 waited = 0.0
-                prev_count = count_captured_entries(cross_run)
                 caught = False
                 while waited < timeout:
                     await asyncio.sleep(2.0)
                     waited += 2.0
-                    if count_captured_entries(cross_run) > prev_count:
+                    if row["convId"] in load_captured_conv_ids(cross_run):
                         print(f"    izleyici yakaladi ({waited:.1f}sn)")
                         caught = True
                         break
