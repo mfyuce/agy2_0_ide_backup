@@ -14,3 +14,10 @@ __pycache__/
 /TODO.md
 /TOBEDECIDED.md
 /DONE.md
+# Dis kaynakli kod incelemeleri de calisma notu sayilir, ayni sebeple
+# ayri private repoda (agy2_0_ide_backup-prv/reviews/) versiyonlanir.
+/reviews/
+# Baska bir CLI aracinin yerel sohbet-log cache'i (bu projenin parcasi degil,
+# icerigi/sahibi bu repo icin netlesmedi -- sadece yanlislikla commit
+# edilmesin diye burada).
+.ucli/

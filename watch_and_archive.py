@@ -9,11 +9,15 @@ en uste scroll eder (lazy-load'i tetiklemek icin), sonra tam sayfa metnini
 kaydeder. Tiklama/navigasyon YAPMAZ -- sadece: (a) sayfa metni okuma,
 (b) scrollTop mutasyonu. Tiklama tarafi icin bkz. click_through_all.py.
 
-Varsayilan olarak her calistirma AYRI, zaman-damgali bir klasore yazar
-(backup gibi -- onceki run'lardaki kayitlari GORMEZ, ayni sohbet tekrar
-acilirsa tekrar yakalar). `--resume` verilirse yeni klasor ACMAZ, en son
-run klasorune devam eder (zaten kaydedilmisleri atlar) -- kod duzeltmesi
-sonrasi yeniden baslatirken bastan baslamamak icin. Cikti:
+Varsayilan olarak her calistirma AYRI, zaman-damgali bir klasore yazar.
+`--resume` verilirse yeni klasor ACMAZ, en son run klasorune devam eder --
+kod duzeltmesi sonrasi yeniden baslatirken bastan baslamamak icin. Resume
+disinda da (yeni klasor acilsa bile) bir konusma DAHA ONCE herhangi bir
+run'da zaten yakalanmissa varsayilan olarak TEKRAR capture edilmez (bkz.
+captured_in_other_run()) -- `--fresh` bu kontrolu devre disi birakip
+gecmisi tamamen gormezden gelir (click_through_all.py --fresh ile
+birlikte, o da kendi --fresh'i almadan bu bayrak tek basina islevsizdir).
+Cikti:
 ~/antigravity_chat_archive/run_<YYYYMMDD_HHMMSS>/<baslik>__<conv_id8>.txt
 (repo DISINDA, kapsam kullanicinin tum portfoyunu icerdigi icin). Aktif
 run'in yolu, click_through_all.py'nin bulabilmesi icin
@@ -221,7 +225,7 @@ def save_seen(seen):
     atomic_write_text(SEEN_FILE, json.dumps(seen, indent=2, ensure_ascii=False))
 
 
-async def main(resume):
+async def main(resume, fresh=False):
     global RUN_DIR, SEEN_FILE
     ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
     os.chmod(ARCHIVE_ROOT, 0o700)
@@ -239,9 +243,11 @@ async def main(resume):
     atomic_write_text(CURRENT_RUN_POINTER, str(RUN_DIR))
     seen = load_seen()
     tag = "DEVAM (resume)" if resume else "YENI RUN"
-    print(f"[{time.strftime('%H:%M:%S')}] {tag}: port {PORT} -> {RUN_DIR}", flush=True)
+    mode_note = " + --fresh (diger run'larin gecmisi gormezden geliniyor)" if fresh else ""
+    print(f"[{time.strftime('%H:%M:%S')}] {tag}{mode_note}: port {PORT} -> {RUN_DIR}", flush=True)
     print(f"[{time.strftime('%H:%M:%S')}] bu run icin {len(seen)} konusma kaydedilmis"
-          + ("" if resume else " (onceki run'lar ayri, gorulmuyor)"), flush=True)
+          + (" (--fresh: diger run'larda daha once yakalanmis olsa bile yeniden capture edilecek)" if fresh
+             else " (diger run'larda zaten yakalanmis konusmalar atlanir, bkz. --fresh)"), flush=True)
 
     while True:
         try:
@@ -259,7 +265,7 @@ async def main(resume):
             conv_id = m.group(1)
             if conv_id in seen:
                 continue
-            if captured_in_other_run(conv_id):
+            if not fresh and captured_in_other_run(conv_id):
                 continue
 
             title = t.get("title", "untitled")
@@ -302,6 +308,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--resume", action="store_true",
                      help="yeni run acma, en son run klasorune devam et (zaten kaydedilmisleri atlar)")
+    ap.add_argument("--fresh", action="store_true",
+                     help="diger run klasorlerinin gecmisini gormezden gel -- daha once baska bir "
+                          "run'da yakalanmis olsa bile HER SEYI yeniden capture et. click_through_all.py "
+                          "--fresh ile birlikte kullan (o da bunu almazsa gecmisi kendi tarafinda atlar).")
     ap.add_argument("--port", type=int, default=int(os.environ.get("CDP_PORT", PORT)),
                      help="CDP hata ayiklama portu (varsayilan: env CDP_PORT ya da 9223)")
     ap.add_argument("--archive-dir", type=str, default=os.environ.get("ARCHIVE_DIR", ""),
@@ -317,6 +327,6 @@ if __name__ == "__main__":
     POLL_INTERVAL = args.poll_interval
 
     try:
-        asyncio.run(main(args.resume))
+        asyncio.run(main(args.resume, args.fresh))
     except KeyboardInterrupt:
         pass

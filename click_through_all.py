@@ -274,6 +274,13 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
         reset = await cdp.eval(SCROLL_SIDEBAR_TO_TOP_EXPR, await_promise=True)
         print(f"[{time.strftime('%H:%M:%S')}] sidebar en tepeye sifirlandi (tekrarli): {reset}")
         print(f"[{time.strftime('%H:%M:%S')}] mod: {'--fresh (sadece aktif run, gecmis gormezden gelinir)' if fresh else 'normal (tum run gecmisi birlesimi)'}")
+        if fresh:
+            already = load_captured_conv_ids(cross_run=False)
+            if already:
+                print(f"[{time.strftime('%H:%M:%S')}] UYARI: --fresh verildi ama aktif run'da zaten {len(already)} "
+                      f"kayit var -- eger watch_and_archive.py'yi --resume ile baslattiysan bu 'fresh' anlamini "
+                      f"sessizce bozar (o kayitlar zaten-yapildi sayilir). Gercekten bagimsiz bir yeniden-yedekleme "
+                      f"istiyorsan watch_and_archive.py'yi --resume OLMADAN (istersen o da --fresh ile) yeniden baslat.")
 
         stale_rounds = 0
         last_scroll_top = -1
@@ -295,6 +302,16 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
         # conv_id'ye gore oldugu icin (bkz. DONE.md 2026-09-21) o senaryo artik
         # gecerli degil.)
         STALE_LIMIT = 40
+        # Zaman asimina ugrayan (izleyici yakalayamadigi) satirlar icin sinirli
+        # yeniden deneme -- eskiden clicked_conv_ids'e tiklama SONUCUNDAN bagimsiz
+        # olarak tiklama ONCESINDE eklendigi icin basarisiz bir tiklama bu pass
+        # boyunca bir daha hic denenmiyordu. Simdi basarisizlikta clicked_conv_ids'ten
+        # cikarilip yeniden todo'ya dusuyor -- ama sinirsiz retry, ayni satirin
+        # sonsuza dek ilk siraya gelip digerlerini bloke etmesine yol acar, bu
+        # yuzden MAX_RETRIES ile ust sinir konuluyor.
+        MAX_RETRIES = 2
+        retry_counts = {}
+        gave_up_conv_ids = set()
 
         while total < max_clicks and stale_rounds < STALE_LIMIT:
             try:
@@ -312,7 +329,8 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
 
             todo = [r for r in rows
                     if r["convId"] not in clicked_conv_ids
-                    and r["convId"] not in captured_conv_ids]
+                    and r["convId"] not in captured_conv_ids
+                    and r["convId"] not in gave_up_conv_ids]
 
             if not todo:
                 try:
@@ -382,12 +400,21 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                     if int(waited) % 20 == 0:
                         print(f"    ... hala bekleniyor ({waited:.0f}sn, canli -- izleyici muhtemelen uzun bir sohbeti scroll ediyor)")
                 if not caught:
-                    print(f"    UYARI: izleyici {waited:.1f}sn'de yakalamadi -- tiklama basarisiz olmus olabilir, devam ediliyor (bir sonraki --live calistirmasinda otomatik yeniden denenecek)")
+                    retry_counts[row["convId"]] = retry_counts.get(row["convId"], 0) + 1
+                    if retry_counts[row["convId"]] < MAX_RETRIES:
+                        clicked_conv_ids.discard(row["convId"])
+                        print(f"    UYARI: izleyici {waited:.1f}sn'de yakalamadi -- bu pass icinde tekrar "
+                              f"denenecek ({retry_counts[row['convId']]}/{MAX_RETRIES})")
+                    else:
+                        gave_up_conv_ids.add(row["convId"])
+                        print(f"    UYARI: izleyici {MAX_RETRIES} denemede de yakalamadi -- bu pass'te pes "
+                              f"ediliyor (bir sonraki --live calistirmasinda otomatik yeniden denenecek)")
             except Exception as e:
                 print(f"    HATA (bu satir atlaniyor, script devam ediyor): {type(e).__name__}: {e}")
                 continue
 
-        print(f"\nBitti. Bu calistirmada tiklanan: {total}, dur-nedeni: {'max limit' if total>=max_clicks else 'yeni satir kalmadi'}")
+        print(f"\nBitti. Bu calistirmada tiklanan: {total}, pes edilen: {len(gave_up_conv_ids)}, "
+              f"dur-nedeni: {'max limit' if total>=max_clicks else 'yeni satir kalmadi'}")
 
 
 if __name__ == "__main__":
@@ -397,8 +424,9 @@ if __name__ == "__main__":
     ap.add_argument("--fresh", action="store_true",
                      help="gecmisi (diger run klasorlerini) gormezden gel -- daha once baska "
                           "bir run'da yakalanmis olsa bile HER SEYI yeniden tikla. Bunu "
-                          "watch_and_archive.py'yi (--resume OLMADAN) yeni bir run acmis "
-                          "haldeyken kullan.")
+                          "watch_and_archive.py'yi de --fresh ile (gerekirse --resume OLMADAN, "
+                          "yeni bir run acmis) haldeyken kullan -- watcher --fresh almazsa "
+                          "gecmisi kendi tarafinda yine atlar ve bu bayrak tek basina islevsiz kalir.")
     ap.add_argument("--port", type=int, default=int(os.environ.get("CDP_PORT", PORT)),
                      help="CDP hata ayiklama portu (varsayilan: env CDP_PORT ya da 9223)")
     ap.add_argument("--archive-dir", type=str, default=os.environ.get("ARCHIVE_DIR", ""),

@@ -67,10 +67,13 @@ off rather than starting a whole new one — it continues writing into the most 
 `click_through_all.py` always skips anything already captured in *any* `run_*/` folder, not
 just the current one — so a title you got in an earlier pass won't get re-clicked in a later
 one, regardless of whether that later `watch_and_archive.py` run used `--resume` or started
-fresh. If you deliberately want a full independent re-backup that ignores history (start
-`watch_and_archive.py` *without* `--resume` first, so it opens a new empty folder, then):
+fresh. `watch_and_archive.py` behaves the same way unless it's also given `--fresh`. If you
+deliberately want a full independent re-backup that ignores history, pass `--fresh` to **both**
+scripts — passing it to the clicker alone isn't enough, since the watcher still skips history
+on its own side:
 
 ```bash
+python3 watch_and_archive.py --fresh
 python3 click_through_all.py --live --fresh
 ```
 

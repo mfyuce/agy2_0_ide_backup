@@ -67,11 +67,13 @@ en son `run_*/` klasörüne yazmaya devam eder, orada zaten yakalanmış olanlar
 `click_through_all.py` her zaman TÜM `run_*/` klasörlerinde (sadece aktif olanda değil)
 daha önce yakalanmış her şeyi atlar — yani önceki bir turda alınmış bir başlık, sonraki
 turda (o turun `watch_and_archive.py`'si `--resume` kullansın ya da yeni açılsın fark etmez)
-tekrar tıklanmaz. Geçmişi bilerek görmezden gelip tam bağımsız bir yeniden yedekleme
-istiyorsan (önce `watch_and_archive.py`'yi `--resume` OLMADAN başlatıp yeni boş bir klasör
-açtır, sonra):
+tekrar tıklanmaz. `watch_and_archive.py` da `--fresh` almadığı sürece aynı şekilde davranır.
+Geçmişi bilerek görmezden gelip tam bağımsız bir yeniden yedekleme istiyorsan, `--fresh`'i
+**her iki script'e de** vermen gerekir — sadece tıkçıya vermek yetmez, izleyici geçmişi kendi
+tarafında yine atlar:
 
 ```bash
+python3 watch_and_archive.py --fresh
 python3 click_through_all.py --live --fresh
 ```
 
