@@ -171,6 +171,10 @@ def current_run_dir():
     return None
 
 
+_other_runs_cache = None
+_other_runs_cache_dirs = None
+
+
 def load_captured_conv_ids(cross_run=True):
     # Varsayilan (cross_run=True): TUM run_*/ klasorlerinin _seen.json'larinin
     # BIRLESIMINE bakar -- bir onceki tasarim SADECE aktif run'a bakiyordu, bu
@@ -188,28 +192,66 @@ def load_captured_conv_ids(cross_run=True):
     # _seen.json zaten conv_id (UUID) ile anahtarlanmis oldugu icin
     # (watch_and_archive.py) dogrudan dict key'lerini kullanmak yeterli.
     #
+    # Bu fonksiyon dis dongude HER turda, bir de satir-basi bekleme dongusunde
+    # ~2sn'de bir cagriliyor -- uzun bir --live calistirmasinda saniyede
+    # onlarca kez. AKTIF OLMAYAN run klasorleri watch_and_archive.py'nin bir
+    # daha asla yazmadigi, "dokunulmadan kalan backup" dosyalar -- tipki
+    # watch_and_archive.py'deki captured_in_other_run()'in kendi diger-run
+    # onbellegini tuttugu gerekceyle -- bu yuzden onlari her cagrida diskten
+    # yeniden okuyup json.loads etmek yerine bellek-ici bir kumede
+    # onbelleklenir, yalnizca diger-run klasorlerinin KUMESI degisince (yeni
+    # bir run_* klasoru ortaya cikinca) yeniden taranir. AKTIF run'in
+    # _seen.json'i ise bu onbellegin DISINDA tutulur ve her cagrida diskten
+    # taze okunur -- o, izleyicinin (watch_and_archive.py) her yakalamasinda
+    # gercekten yazdigi, surekli degisen tek dosya.
+    #
     # cross_run=False (--fresh bayragi): SADECE aktif run'a bakar -- kullanici
     # bilerek TAM YENI bir yedekleme turu istediginde (her seyi, daha once
-    # baska run'larda alinmis olsa bile, yeniden cekmek icin) kullanilir.
+    # baska run'larda alinmis olsa bile, yeniden cekmek icin) kullanilir. Bu
+    # dal kasitli olarak onbelleksiz/her-zaman-taze birakildi -- nadiren
+    # cagrilir ve burada dogruluk hizdan daha onemli.
     conv_ids = set()
     if not ARCHIVE_ROOT.exists():
         return conv_ids
 
-    if cross_run:
-        run_dirs = list(ARCHIVE_ROOT.glob("run_*"))
-    else:
+    if not cross_run:
         only = current_run_dir()
         run_dirs = [only] if only else []
+        for run_dir in run_dirs:
+            seen_file = run_dir / "_seen.json"
+            if not seen_file.exists():
+                continue
+            try:
+                data = json.loads(seen_file.read_text())
+                conv_ids.update(data.keys())
+            except Exception:
+                continue
+        return conv_ids
 
-    for run_dir in run_dirs:
-        seen_file = run_dir / "_seen.json"
-        if not seen_file.exists():
-            continue
-        try:
-            data = json.loads(seen_file.read_text())
-            conv_ids.update(data.keys())
-        except Exception:
-            continue
+    global _other_runs_cache, _other_runs_cache_dirs
+    active = current_run_dir()
+    other_dirs = frozenset(p for p in ARCHIVE_ROOT.glob("run_*") if p != active)
+    if _other_runs_cache is None or other_dirs != _other_runs_cache_dirs:
+        cache = set()
+        for run_dir in other_dirs:
+            seen_file = run_dir / "_seen.json"
+            if not seen_file.exists():
+                continue
+            try:
+                cache.update(json.loads(seen_file.read_text()).keys())
+            except Exception:
+                continue
+        _other_runs_cache = cache
+        _other_runs_cache_dirs = other_dirs
+
+    conv_ids = set(_other_runs_cache)
+    if active is not None:
+        seen_file = active / "_seen.json"
+        if seen_file.exists():
+            try:
+                conv_ids.update(json.loads(seen_file.read_text()).keys())
+            except Exception:
+                pass
     return conv_ids
 
 
@@ -274,6 +316,22 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
         reset = await cdp.eval(SCROLL_SIDEBAR_TO_TOP_EXPR, await_promise=True)
         print(f"[{time.strftime('%H:%M:%S')}] sidebar en tepeye sifirlandi (tekrarli): {reset}")
         print(f"[{time.strftime('%H:%M:%S')}] mod: {'--fresh (sadece aktif run, gecmis gormezden gelinir)' if fresh else 'normal (tum run gecmisi birlesimi)'}")
+
+        # Ucuz on-kontrol (asil kok-neden duzeltmesi asagida, dis donguye
+        # girmeden HEMEN once): watch_and_archive.py hic baslatilmamissa bu
+        # dosya hic olusmaz. Bu durumda tiklamaya devam etmenin hicbir anlami
+        # yok -- hicbir sey yakalanmayacagi icin her satir sessizce tam
+        # --timeout kadar bosuna beklenir. Bu sadece "izleyici hic hic
+        # baslamamis" halini ucuza baglar; "izleyici baslamis ama sonradan
+        # olmus/tikanmis" halini asagidaki ardisik-kacirma sayaci yakalar.
+        if not CURRENT_RUN_POINTER.exists():
+            print(f"[{time.strftime('%H:%M:%S')}] HATA: {CURRENT_RUN_POINTER} bulunamadi -- "
+                  f"watch_and_archive.py hic baslatilmamis gibi gorunuyor. Simdi tiklamaya "
+                  f"devam etmek, hicbir sey yakalanmadan her satirda --timeout ({timeout:.0f}sn) "
+                  f"kadar sessizce beklemekten baska bir ise yaramaz. Once ayri bir terminalde "
+                  f"'python3 watch_and_archive.py' calistir, sonra bunu tekrar dene.")
+            return
+
         if fresh:
             already = load_captured_conv_ids(cross_run=False)
             if already:
@@ -312,6 +370,18 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
         MAX_RETRIES = 2
         retry_counts = {}
         gave_up_conv_ids = set()
+        # Kritik #12: MAX_RETRIES/retry_counts SATIR bazinda calisir -- izleyici
+        # (watch_and_archive.py) sureci tamamen olmus/tikanmis olsa bile her
+        # satir yine de kendi ust sinirina (~timeout * MAX_RETRIES saniye) kadar
+        # tek tek bosuna bekler, gave_up_conv_ids'e duser, dongu bir sonraki
+        # satira gecer -- boylece yuzlerce satir boyunca sessizce "ilerliyor
+        # gibi" gorunup saatlerce hicbir sey yakalanmamis olabilir. Bunun icin
+        # retry_counts'tan BAGIMSIZ, ARDISIK kacirmalari sayan ayri bir sayac
+        # tutuyoruz (bir satir yakalanirsa sifirlanir) -- ust uste
+        # CONSECUTIVE_MISS_LIMIT kadar satir hic yakalanmazsa, MAX_RETRIES'in
+        # dolmasini ya da STALE_LIMIT'i beklemeden butun taramayi durdururuz.
+        CONSECUTIVE_MISS_LIMIT = 3
+        consecutive_misses = 0
 
         while total < max_clicks and stale_rounds < STALE_LIMIT:
             try:
@@ -399,7 +469,10 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                         break
                     if int(waited) % 20 == 0:
                         print(f"    ... hala bekleniyor ({waited:.0f}sn, canli -- izleyici muhtemelen uzun bir sohbeti scroll ediyor)")
-                if not caught:
+                if caught:
+                    consecutive_misses = 0
+                else:
+                    consecutive_misses += 1
                     retry_counts[row["convId"]] = retry_counts.get(row["convId"], 0) + 1
                     if retry_counts[row["convId"]] < MAX_RETRIES:
                         clicked_conv_ids.discard(row["convId"])
@@ -409,12 +482,18 @@ async def run(live, max_clicks, fresh=False, timeout=320.0):
                         gave_up_conv_ids.add(row["convId"])
                         print(f"    UYARI: izleyici {MAX_RETRIES} denemede de yakalamadi -- bu pass'te pes "
                               f"ediliyor (bir sonraki --live calistirmasinda otomatik yeniden denenecek)")
+                    if consecutive_misses >= CONSECUTIVE_MISS_LIMIT:
+                        print(f"[{time.strftime('%H:%M:%S')}] HATA: ust uste {consecutive_misses} satir "
+                              f"izleyici tarafindan HIC yakalanmadi -- watch_and_archive.py olu/tikanmis "
+                              f"gibi gorunuyor. Tum tarama durduruluyor -- --live'i yeniden baslatmadan "
+                              f"once watch_and_archive.py'nin gercekten calisir durumda oldugunu dogrula.")
+                        break
             except Exception as e:
                 print(f"    HATA (bu satir atlaniyor, script devam ediyor): {type(e).__name__}: {e}")
                 continue
 
         print(f"\nBitti. Bu calistirmada tiklanan: {total}, pes edilen: {len(gave_up_conv_ids)}, "
-              f"dur-nedeni: {'max limit' if total>=max_clicks else 'yeni satir kalmadi'}")
+              f"dur-nedeni: {'izleyici yanit vermiyor (Kritik #12)' if consecutive_misses >= CONSECUTIVE_MISS_LIMIT else ('max limit' if total>=max_clicks else 'yeni satir kalmadi')}")
 
 
 if __name__ == "__main__":

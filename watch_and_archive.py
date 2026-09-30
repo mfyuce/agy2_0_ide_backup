@@ -249,6 +249,20 @@ async def main(resume, fresh=False):
           + (" (--fresh: diger run'larda daha once yakalanmis olsa bile yeniden capture edilecek)" if fresh
              else " (diger run'larda zaten yakalanmis konusmalar atlanir, bkz. --fresh)"), flush=True)
 
+    # Kisa/bos icerik icin bellek-ici deneme sayaci -- click_through_all.py'nin
+    # run()'undaki MAX_RETRIES/retry_counts/gave_up_conv_ids ile ayni fikir:
+    # surekli kisa donen bir conv_id (gercekten bozuk/bos sayfa) MAX_RETRIES
+    # denemeden sonra bu surec icin gave_up_conv_ids'e eklenip bir daha
+    # denenmez -- yoksa her POLL_INTERVAL'de sonsuza dek capture() tekrar
+    # cagrilir (bosuna beklenir, log kirlenir) ve ayni pass'teki diger
+    # target'lar da (asagidaki for dongusu sirali oldugu icin) geciktirilir.
+    # Bilerek seen'e/_seen.json'a YAZILMIYOR: kalici olsaydi gelecekte yeni
+    # bir izleyici sureci ya da click_through_all.py --live turu de bu
+    # konusmayi hicbir zaman yeniden deneyemezdi.
+    retry_counts = {}
+    gave_up_conv_ids = set()
+    MAX_RETRIES = 3
+
     while True:
         try:
             targets = [t for t in await asyncio.to_thread(list_targets) if t.get("type") == "page"]
@@ -267,6 +281,8 @@ async def main(resume, fresh=False):
                 continue
             if not fresh and captured_in_other_run(conv_id):
                 continue
+            if conv_id in gave_up_conv_ids:
+                continue
 
             title = t.get("title", "untitled")
             target_id = t.get("id")
@@ -279,7 +295,14 @@ async def main(resume, fresh=False):
                 continue
 
             if not text or len(text) < 30:
-                print("    icerik cok kisa, sonraki turda tekrar denenecek", flush=True)
+                retry_counts[conv_id] = retry_counts.get(conv_id, 0) + 1
+                if retry_counts[conv_id] < MAX_RETRIES:
+                    print("    icerik cok kisa, sonraki turda tekrar denenecek", flush=True)
+                else:
+                    gave_up_conv_ids.add(conv_id)
+                    print(f"    PES EDILDI: icerik {MAX_RETRIES} denemede de cok kisa kaldi -- bu calistirma "
+                          f"suresince tekrar denenmeyecek (kalici degil, ileride yeni bir izleyici sureci ya "
+                          f"da --live turu yine deneyecek)", flush=True)
                 continue
 
             # Yaris-durumu korumasi: capture() suresince (uzun sohbetlerde
@@ -296,7 +319,7 @@ async def main(resume, fresh=False):
                 continue
 
             fname = RUN_DIR / f"{safe_name(title)}__{conv_id[:8]}.txt"
-            fname.write_text(text, encoding="utf-8")
+            atomic_write_text(fname, text)
             seen[conv_id] = {"title": title, "file": fname.name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"), "chars": len(text)}
             save_seen(seen)
             print(f"    kaydedildi: {fname.name} ({len(text)} karakter)", flush=True)
